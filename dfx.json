@@ -1,0 +1,26 @@
+{
+  "canisters": {
+    "defi_pool_backend": {
+      "candid": "src/defi_pool_backend/defi_pool_backend.did",
+      "package": "defi_pool_backend",
+      "type": "rust"
+    },
+    "defi_pool_frontend": {
+      "dependencies": [
+        "defi_pool_backend"
+      ],
+      "source": [
+        "src/defi_pool_frontend/assets"
+      ],
+      "type": "assets"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "src/defi_pool_backend"
+]
+resolver = "2"
