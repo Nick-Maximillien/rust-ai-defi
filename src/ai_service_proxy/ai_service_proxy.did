@@ -1,0 +1,17 @@
+type RiskRequest = record {
+  volatility: nat;
+  collateral: nat;
+  borrowed: nat;
+  deposits: nat;
+  credit_score: nat;
+};
+
+type RiskResponse = record {
+  risk_score: nat8;
+  advice: text;
+};
+
+service : {
+  risk: (RiskRequest) -> (RiskResponse); // update
+  version: () -> (text) query;
+};

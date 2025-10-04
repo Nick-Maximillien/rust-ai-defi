@@ -5,14 +5,10 @@
       "package": "defi_pool_backend",
       "type": "rust"
     },
-    "defi_pool_frontend": {
-      "dependencies": [
-        "defi_pool_backend"
-      ],
-      "source": [
-        "src/defi_pool_frontend/assets"
-      ],
-      "type": "assets"
+    "ai_service_proxy": {
+      "candid": "src/ai_service_proxy/ai_service_proxy.did",
+      "package": "ai_service_proxy",
+      "type": "rust"
     }
   },
   "defaults": {

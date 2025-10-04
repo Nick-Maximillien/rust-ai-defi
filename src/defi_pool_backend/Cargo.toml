@@ -1,14 +1,45 @@
+# =========================
+# Package Metadata
+# =========================
 [package]
-name = "defi_pool_backend"
-version = "0.1.0"
-edition = "2021"
+name = "defi_pool_backend"   # Name of your Rust crate (used in cargo commands)
+version = "0.1.0"            # Version of your crate
+edition = "2021"             # Rust edition; 2021 edition enables latest Rust features
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
+# =========================
+# Library Configuration
+# =========================
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib"]      # Compile as a C-compatible dynamic library for IC canisters
 
+# =========================
+# Dependencies
+# =========================
 [dependencies]
+
+# Candid serialization for Internet Computer (ICP) canisters
+# Used for exchanging data between canisters or with frontends
 candid = "0.10"
+
+# Core IC development kit
+# Provides macros, environment functions, and stable API for canister logic
 ic-cdk = "0.18"
-ic-cdk-timers = "0.12" # Feel free to remove this dependency if you don't need timers
+
+# IC CDK macros for #[init], #[update], #[query] annotations
+ic-cdk-macros = "0.18"
+
+# Timer utilities for scheduling async tasks in ICP canisters
+ic-cdk-timers = "0.12"
+
+# Serde for Rust serialization/deserialization (JSON, etc.)
+# The "derive" feature enables automatic #[derive(Serialize, Deserialize)]
+serde = { version = "1.0", features = ["derive"] }
+
+# Provides Lazy static initialization (thread-safe) for global state
+once_cell = "1.21"
+
+# Big integer arithmetic (arbitrary precision) for token balances, collateral, etc.
+num-bigint = "0.4"
+
+# Provides numeric traits, conversions, and utilities for arithmetic
+num-traits = "0.2"

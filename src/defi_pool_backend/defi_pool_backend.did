@@ -1,3 +1,43 @@
+type BorrowRequest = record {
+  amount: nat;
+};
+
+type UserAccount = record {
+  deposited: nat;
+  borrowed: nat;
+  collateral: nat;
+  credit_score: nat;
+  risk_advice: opt text;
+  username: opt text; 
+};
+
+type StableToken = record {
+  total_supply: nat;
+  balances: vec record { key: text; value: nat };
+};
+
+type RiskRequest = record {
+  volatility: nat;
+  collateral: nat;
+  borrowed: nat;
+  deposits: nat;
+  credit_score: nat;
+};
+
+type RiskResponse = record {
+  risk_score: nat8;
+  advice: text;
+};
+
 service : {
-    "greet": (text) -> (text) query;
-}
+  deposit: (text, nat) -> (bool);
+  deposit_collateral: (text, nat) -> (bool);
+  withdraw_collateral: (text, nat) -> (bool);
+  borrow: (text, BorrowRequest) -> (bool);
+  repay: (text, nat) -> (bool);
+  get_balance: (text) -> (nat);
+  get_user_account: (text) -> (opt UserAccount);
+  get_stable_token: () -> (StableToken);
+  set_ai_proxy: (principal) -> (bool);
+  signup: (text, text) -> (bool);
+};
