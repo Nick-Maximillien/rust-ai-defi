@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "src/defi_pool_backend",
-    "src/ai_service_proxy"
+    "src/ai_service_proxy",
+    "src/dip20_icp_token"
 ]
 
 resolver = "2"

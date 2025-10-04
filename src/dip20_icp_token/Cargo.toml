@@ -1,18 +1,15 @@
 [package]
-name = "defi_pool_backend"
+name = "dip20_icp_token"
 version = "0.1.0"
 edition = "2021"
-
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-candid = "0.10"
-ic-cdk = "0.18"
+candid = "0.10"                       # latest candid
+ic-cdk = "0.18"                       # match backend
 ic-cdk-macros = "0.18"
-ic-cdk-timers = "0.12"
 serde = { version = "1.0", features = ["derive"] }
-once_cell = "1.21"
+once_cell = "1.19"
 num-bigint = "0.4"
 num-traits = "0.2"
-futures = "0.3"

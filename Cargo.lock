@@ -197,6 +197,7 @@ name = "defi_pool_backend"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "futures",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-timers",
@@ -214,6 +215,19 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+]
+
+[[package]]
+name = "dip20_icp_token"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "ic-cdk-macros",
+ "num-bigint",
+ "num-traits",
+ "once_cell",
+ "serde",
 ]
 
 [[package]]

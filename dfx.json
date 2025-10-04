@@ -9,6 +9,11 @@
       "candid": "src/ai_service_proxy/ai_service_proxy.did",
       "package": "ai_service_proxy",
       "type": "rust"
+    },
+    "dip20_icp_token": {
+      "candid": "src/dip20_icp_token/dip20_icp_token.did",
+      "package": "dip20_icp_token",
+      "type": "rust"
     }
   },
   "defaults": {

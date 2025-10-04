@@ -1,64 +1,95 @@
-// src/defi_pool_backend/lib.rs
-
 use ic_cdk_macros::{init, query, update};
-use ic_cdk::api::debug_print;
-use candid::Principal;
-use num_traits::cast::ToPrimitive;
-
+use candid::{CandidType, Nat, Principal, Deserialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
-use candid::{CandidType, Nat, Deserialize};
-use serde::Serialize;
 use num_bigint::BigUint;
+use num_traits::cast::ToPrimitive;
+use ic_cdk::api::canister_self;
+use ic_cdk::call;
 
 mod types;
-use types::{UserAccount, BorrowRequest, RiskRequest, RiskResponse};
+use types::{UserAccount, BorrowRequest, RiskRequest, RiskResponse, StableBalanceEntry, StableToken, CrowdfundEntry};
 
-/// Represents a user's stablecoin balance for serialization and JSON.
+/// DIP-20 helper functions
+mod dip20 {
+    use candid::{Nat, Principal};
+    use ic_cdk::call;
+
+    pub async fn transfer(token: Principal, from: Principal, to: Principal, amount: Nat) -> bool {
+        let res: Result<(bool,), _> = call(token, "transferFrom", (from, to, amount)).await;
+        res.map(|(ok,)| ok).unwrap_or(false)
+    }
+
+    pub async fn balance_of(token: Principal, owner: Principal) -> Nat {
+        let res: Result<(Nat,), _> = call(token, "balanceOf", (owner,)).await;
+        res.map(|(b,)| b).unwrap_or(Nat::from(0u64))
+    }
+
+    pub async fn mint(token: Principal, to: Principal, amount: Nat) -> bool {
+        let res: Result<(bool,), _> = call(token, "mint", (to, amount)).await;
+        res.map(|(ok,)| ok).unwrap_or(false)
+    }
+}
+
+/// Multi-token collateral entry
 #[derive(CandidType, Serialize, Deserialize, Clone)]
-pub struct StableBalanceEntry {
-    pub key: String,
-    pub value: Nat,
+pub struct CollateralEntry {
+    pub token: String,
+    pub amount: Nat,
 }
 
-/// Aggregate stablecoin info for all users.
-#[derive(CandidType, Serialize, Deserialize, Clone, Default)]
-pub struct StableToken {
-    pub total_supply: Nat,
-    pub balances: Vec<StableBalanceEntry>,
+/// Crowdfunding pool
+#[derive(Default)]
+pub struct CrowdfundingPool {
+    pub funds: HashMap<String, Nat>, 
+    pub contributors: HashMap<String, HashMap<String, Nat>>, 
 }
 
-/// Core DeFi pool state containing user accounts, balances, and usernames.
+/// Core DeFi pool state
 #[derive(Default)]
 pub struct DeFiPool {
     pub users: HashMap<String, UserAccount>,
-    pub stablecoin_balances: HashMap<String, Nat>,
+    pub stablecoin_balances: HashMap<String, HashMap<String, Nat>>, 
+    pub collateral: HashMap<String, HashMap<String, Nat>>,          
     pub usernames: HashMap<String, String>,
+    pub supported_tokens: Vec<String>, 
+    pub token_canisters: HashMap<String, Principal>, 
+    // --- Mint logs
+    pub mint_logs: Vec<(String, String, Nat)>, // (user, token, amount)
+    pub per_user_mint_logs: HashMap<String, Vec<(String, Nat)>>, // user -> Vec<(token, amount)>
 }
 
-/// Global, thread-safe pool state.
+/// Global state
 static POOL: Lazy<Mutex<DeFiPool>> = Lazy::new(|| Mutex::new(DeFiPool::default()));
-/// Principal of the AI risk canister for async risk evaluation.
-static AI_SERVICE_PROXY_PRINCIPAL: Lazy<Mutex<Option<Principal>>> = Lazy::new(|| Mutex::new(None));
+static CF_POOL: Lazy<Mutex<CrowdfundingPool>> =
+    Lazy::new(|| Mutex::new(CrowdfundingPool::default()));
+static AI_SERVICE_PROXY_PRINCIPAL: Lazy<Mutex<Option<Principal>>> =
+    Lazy::new(|| Mutex::new(None));
 
-/// Canister initialization
-#[init]
-fn init() {
+#[update]
+fn init_tokens() -> bool {
     let mut pool = POOL.lock().unwrap();
-    pool.users = HashMap::new();
-    pool.stablecoin_balances = HashMap::new();
-    pool.usernames = HashMap::new();
+    if pool.supported_tokens.is_empty() {
+        pool.supported_tokens = vec!["ICP".to_string(), "FAKEBTC".to_string(), "FAKEETH".to_string()];
+        match Principal::from_text("ulvla-h7777-77774-qaacq-cai") {
+            Ok(icp_canister) => {
+                pool.token_canisters.insert("ICP".to_string(), icp_canister);
+            }
+            Err(err) => ic_cdk::print(format!("Failed to parse ICP canister ID: {:?}", err)),
+        }
+        return true;
+    }
+    false
 }
 
-/// Register a new user (principal + username).
+// ---------------- USER MANAGEMENT ----------------
+
 #[update]
 fn signup(user: String, username: String) -> bool {
-    debug_print(&format!("Signup called with user='{}', username='{}'", user, username));
-
     let mut pool = POOL.lock().unwrap();
     if pool.users.contains_key(&user) {
-        debug_print(&format!("Signup failed: user '{}' already exists", user));
         return false;
     }
 
@@ -66,30 +97,22 @@ fn signup(user: String, username: String) -> bool {
     account.credit_score = Nat::from(700u64);
 
     pool.users.insert(user.clone(), account);
-    pool.usernames.insert(user.clone(), username.clone());
-
-    debug_print(&format!("Signup succeeded: {} -> {}", user, username));
-    debug_print(&format!("Current users: {:?}", pool.usernames.keys()));
-
+    pool.usernames.insert(user.clone(), username);
     true
 }
 
-// List all registered users
 #[query]
 fn list_users() -> Vec<String> {
     let pool = POOL.lock().unwrap();
     pool.users.keys().cloned().collect()
 }
 
-
-/// Get stored username for a principal
 #[query]
 fn get_username(user: String) -> Option<String> {
     let pool = POOL.lock().unwrap();
     pool.usernames.get(&user).cloned()
 }
 
-/// Set the AI service canister principal
 #[update]
 fn set_ai_proxy(principal: Principal) -> bool {
     let mut p = AI_SERVICE_PROXY_PRINCIPAL.lock().unwrap();
@@ -97,260 +120,417 @@ fn set_ai_proxy(principal: Principal) -> bool {
     true
 }
 
-/// Minimum collateral required (1.5x borrowed)
-fn required_collateral(borrowed: &BigUint) -> BigUint {
-    (borrowed * 3u32) / 2u32
+#[update]
+fn add_token(token: String, principal: Principal) -> bool {
+    let mut pool = POOL.lock().unwrap();
+    if pool.supported_tokens.contains(&token) {
+        pool.token_canisters.insert(token.clone(), principal);
+        true
+    } else {
+        false
+    }
 }
 
-/// Compute total stablecoin supply
+/// Compute total supply
 fn compute_total_supply(pool: &DeFiPool) -> Nat {
-    let total = pool
-        .stablecoin_balances
-        .values()
-        .fold(BigUint::from(0u32), |acc, n| acc + &n.0);
+    let mut total = BigUint::from(0u32);
+    for user_balances in pool.stablecoin_balances.values() {
+        for bal in user_balances.values() {
+            total += &bal.0;
+        }
+    }
     Nat::from(total)
 }
 
-/// Perform async AI risk check; updates account.risk_advice
-async fn risk_check(account: &mut UserAccount) -> Option<RiskResponse> {
+fn aggregate_collateral(account_collateral: &HashMap<String, Nat>) -> f64 {
+    account_collateral
+        .iter()
+        .map(|(token, amt)| {
+            let price = match token.as_str() {
+                "ICP" => 1.0,
+                "FAKEBTC" => 50000.0,
+                "FAKEETH" => 3000.0,
+                _ => 1.0,
+            };
+            amt.0.to_f64().unwrap_or(0.0) * price
+        })
+        .sum()
+}
+
+fn aggregate_borrowed(account_borrowed: &HashMap<String, Nat>) -> f64 {
+    account_borrowed
+        .iter()
+        .map(|(token, amt)| {
+            let price = match token.as_str() {
+                "ICP" => 1.0,
+                "FAKEBTC" => 50000.0,
+                "FAKEETH" => 3000.0,
+                _ => 1.0,
+            };
+            amt.0.to_f64().unwrap_or(0.0) * price
+        })
+        .sum()
+}
+
+fn aggregate_deposits(account_balances: &HashMap<String, Nat>) -> f64 {
+    account_balances
+        .iter()
+        .map(|(token, amt)| {
+            let price = match token.as_str() {
+                "ICP" => 1.0,
+                "FAKEBTC" => 50000.0,
+                "FAKEETH" => 3000.0,
+                _ => 1.0,
+            };
+            amt.0.to_f64().unwrap_or(0.0) * price
+        })
+        .sum()
+}
+
+/// AI risk check
+async fn risk_check(
+    account: &mut UserAccount,
+    coll_usd: f64,
+    borrowed_usd: f64,
+    deposits_usd: f64,
+) -> Option<RiskResponse> {
     let principal = {
         let guard = AI_SERVICE_PROXY_PRINCIPAL.lock().unwrap();
         guard.clone()?
     };
 
-    // Compute simple volatility metric
-    let deposits_f64 = account.deposited.0.to_f64().unwrap_or(0.0);
-    let borrowed_f64 = account.borrowed.0.to_f64().unwrap_or(0.0);
-    let mut volatility = if deposits_f64 > 0.0 { borrowed_f64 / deposits_f64 } else { 0.01 };
-    volatility = volatility.clamp(0.01, 0.5);
-    let scaled_volatility = (volatility * 1000.0).round() as u64;
+    let volatility = if deposits_usd > 0.0 {
+        borrowed_usd / deposits_usd
+    } else {
+        0.01
+    };
+    let scaled_vol = (volatility.clamp(0.01, 0.5) * 1000.0).round() as u64;
 
     let request = RiskRequest {
-        collateral: Nat::from(account.collateral.0.clone()),
-        borrowed: Nat::from(account.borrowed.0.clone()),
-        deposits: Nat::from(account.deposited.0.clone()),
-        volatility: Nat::from(scaled_volatility),
-        credit_score: Nat::from(account.deposited.0.clone()),
+        collateral: Nat::from(coll_usd as u64),
+        borrowed: Nat::from(borrowed_usd as u64),
+        deposits: Nat::from(deposits_usd as u64),
+        volatility: Nat::from(scaled_vol),
+        credit_score: Nat::from(account.credit_score.0.clone()),
     };
 
-    debug_print(&format!("Calling AI canister {} with request: {:?}", principal, request));
-
-    let result: Result<(RiskResponse,), _> =
-        ic_cdk::call(principal, "risk", (request,)).await;
+    let result: Result<(RiskResponse,), _> = call(principal, "risk", (request,)).await;
 
     if let Ok((resp,)) = result {
-        debug_print(&format!("AI canister response: {:?}", resp));
         account.risk_advice = Some(resp.advice.clone());
         Some(resp)
     } else {
-        debug_print(&format!("AI canister call failed: {:?}", result.err()));
         account.risk_advice = Some("AI service unavailable".to_string());
         None
     }
 }
 
-/// Deposit stablecoins (updates both account and pool balances)
-#[update]
-fn deposit(user: String, amount: Nat) -> bool {
-    let mut pool = POOL.lock().unwrap();
-    let account = pool.users.entry(user.clone()).or_default();
-    account.deposited = Nat::from(&account.deposited.0 + &amount.0);
+// ---------------- HELPER: LOG MINT ----------------
+fn log_mint(pool: &mut DeFiPool, user: &str, token: &str, amount: &Nat) {
+    pool.mint_logs.push((user.to_string(), token.to_string(), amount.clone()));
+    pool.per_user_mint_logs
+        .entry(user.to_string())
+        .or_default()
+        .push((token.to_string(), amount.clone()));
 
-    let bal = pool.stablecoin_balances.entry(user.clone()).or_insert(Nat::from(0u64));
-    *bal = Nat::from(&bal.0 + &amount.0);
-
-    true
+    ic_cdk::print(format!(
+        "log_mint: user={}, token={}, amount={}",
+        user, token, amount
+    ));
 }
 
-/// Deposit collateral with AI risk check
+// ---------------- DEPOSIT ----------------
 #[update]
-async fn deposit_collateral(user: String, amount: Nat) -> bool {
-    // Lock pool and get mutable reference to account
-    let mut pool = POOL.lock().unwrap();
-    let account = match pool.users.get_mut(&user) {
-        Some(acc) => acc,
-        None => {
-            debug_print(&format!("Deposit collateral failed: user '{}' not found", user));
-            return false;
-        }
-    };
+async fn deposit(token: String, amount: Nat) -> bool {
+    let caller = ic_cdk::caller();
 
-    // Tentatively increase collateral
-    let potential_collateral = Nat::from(&account.collateral.0 + &amount.0);
-
-    // Ensure minimum collateral after deposit
-    let required = required_collateral(&account.borrowed.0);
-    if potential_collateral.0 < required {
-        account.risk_advice = Some("Collateral insufficient for current borrowed amount".to_string());
-        return false;
-    }
-
-    account.collateral = potential_collateral.clone();
-
-    // Release lock before awaiting async AI check
-    drop(pool);
-
-    // Perform AI risk check
-    if let Some(mut pool) = POOL.lock().ok() {
-        let account = pool.users.get_mut(&user).unwrap(); // safe to unwrap
-        if let Some(risk) = risk_check(account).await {
-            if risk.risk_score > 0 {
-                // Revert collateral increase on high risk
-                account.collateral = Nat::from(&account.collateral.0 - &amount.0);
+    // Get token canister principal safely
+    let principal = {
+        let pool = POOL.lock().unwrap();
+        match pool.token_canisters.get(&token) {
+            Some(p) => *p,
+            None => {
+                ic_cdk::print(format!("Deposit failed: token {} not supported", token));
                 return false;
             }
         }
+    };
+
+    let canister_id = canister_self();
+
+    ic_cdk::print(format!(
+        "Deposit called: caller={}, token={}, amount={}, pool={}",
+        caller, token, amount, canister_id
+    ));
+
+    // Step 1: Transfer token from caller to pool canister
+    let transferred = dip20::transfer(principal, caller, canister_id, amount.clone()).await;
+    if !transferred {
+        ic_cdk::print("Deposit failed: transferFrom returned false");
+        return false;
+    }
+    ic_cdk::print("Transfer successful");
+
+    // Step 2: Mint stablecoin to caller
+    let minted = dip20::mint(principal, caller, amount.clone()).await;
+    if !minted {
+        ic_cdk::print("Deposit failed: mint returned false");
+        return false;
+    }
+    ic_cdk::print("Mint successful");
+
+    // Step 3: Update balances and log mint inside one mutex lock
+    {
+        let mut pool = POOL.lock().unwrap();
+        let caller_text = caller.to_text();
+        let balances = pool.stablecoin_balances.entry(caller_text.clone()).or_default();
+        let entry = balances.entry(token.clone()).or_insert(Nat::from(0u64));
+        *entry = Nat::from(&entry.0 + &amount.0);
+
+        log_mint(&mut pool, &caller_text, &token, &amount);
     }
 
+    ic_cdk::print(format!(
+        "Deposit successful: caller={}, token={}, amount={}",
+        caller, token, amount
+    ));
     true
 }
 
-/// Borrow stablecoins with AI risk check
+// ---------------- WITHDRAW COLLATERAL ----------------
 #[update]
-async fn borrow(user: String, request: BorrowRequest) -> bool {
-    // Lock pool and get mutable reference to account
+fn withdraw_collateral(user: String, token: String, amount: Nat) -> bool {
     let mut pool = POOL.lock().unwrap();
-    let account = match pool.users.get_mut(&user) {
-        Some(acc) => acc,
-        None => {
-            debug_print(&format!("Borrow failed: user '{}' not found", user));
-            return false;
-        }
+    let user_coll = pool.collateral.entry(user.clone()).or_default();
+    let coll = user_coll.entry(token.clone()).or_insert(Nat::from(0u64));
+    if *coll < amount { return false; }
+    let diff = &coll.0 - &amount.0;
+    *coll = Nat::from(diff);
+    true
+}
+
+// ---------------- BORROW ----------------
+#[update]
+async fn borrow(token: String, amount: Nat) -> bool {
+    let caller = ic_cdk::caller();
+
+    // Step 1: Get collateral, borrowed, and deposits for risk check
+    let (coll_clone, borrowed_clone, deposits_clone) = {
+        let pool = POOL.lock().unwrap();
+        let coll = pool.collateral.get(&caller.to_text()).cloned().unwrap_or_default();
+        let borrowed = pool.stablecoin_balances.get(&caller.to_text()).cloned().unwrap_or_default();
+        let deposits = pool.stablecoin_balances.get(&caller.to_text()).cloned().unwrap_or_default();
+        (coll, borrowed, deposits)
     };
 
-    // Compute potential new borrowed amount
-    let potential_borrowed = Nat::from(&account.borrowed.0 + &request.amount.0);
+    let coll_usd = aggregate_collateral(&coll_clone);
+    let borrowed_usd = aggregate_borrowed(&borrowed_clone);
+    let deposits_usd = aggregate_deposits(&deposits_clone);
 
-    // Ensure user has enough collateral before borrowing
-    let required = required_collateral(&potential_borrowed.0);
-    if account.collateral.0 < required {
-        account.risk_advice = Some("Insufficient collateral to borrow requested amount".to_string());
+    // Step 2: Risk check with AI
+    let mut pool = POOL.lock().unwrap();
+    let account = match pool.users.get_mut(&caller.to_text()) {
+        Some(acc) => acc,
+        None => return false,
+    };
+    if risk_check(account, coll_usd, borrowed_usd, deposits_usd).await.is_none() {
         return false;
     }
 
-    // Tentatively increase borrowed amount
-    account.borrowed = potential_borrowed.clone();
+    // Step 3: Update borrowed balances
+    let balances = pool.stablecoin_balances.entry(caller.to_text()).or_default();
+    let entry = balances.entry(token.clone()).or_insert(Nat::from(0u64));
+    *entry = Nat::from(&entry.0 + &amount.0);
 
-    // Release lock before awaiting async AI check
-    drop(pool);
-
-    // Perform AI risk check
-    if let Some(mut pool) = POOL.lock().ok() {
-        let account = pool.users.get_mut(&user).unwrap(); // safe to unwrap
-        if let Some(risk) = risk_check(account).await {
-            if risk.risk_score > 0 {
-                // Revert borrowed amount on high risk
-                account.borrowed = Nat::from(&account.borrowed.0 - &request.amount.0);
-                return false;
-            }
-        }
+    // Step 4: Mint token to caller
+    if let Some(token_principal) = pool.token_canisters.get(&token) {
+        dip20::mint(*token_principal, caller, amount.clone()).await;
+        log_mint(&mut pool, &caller.to_text(), &token, &amount);
     }
-
-    // Lock pool again to update stablecoin balance
-    let mut pool = POOL.lock().unwrap();
-    let bal = pool.stablecoin_balances.entry(user.clone()).or_insert(Nat::from(0u64));
-    *bal = Nat::from(&bal.0 + &request.amount.0);
 
     true
 }
 
 
-
-/// Repay borrowed stablecoins
+// ---------------- REPAY ----------------
 #[update]
-fn repay(user: String, amount: Nat) -> bool {
+fn repay(token: String, amount: Nat) -> bool {
+    let caller = ic_cdk::caller();
+
     let mut pool = POOL.lock().unwrap();
-    if let Some(account) = pool.users.get_mut(&user) {
-        if account.borrowed.0 < amount.0 {
-            return false;
-        }
-        account.borrowed = Nat::from(&account.borrowed.0 - &amount.0);
-        let bal = pool.stablecoin_balances.entry(user.clone()).or_insert(Nat::from(0u64));
-        if bal.0 < amount.0 {
-            return false;
-        }
-        *bal = Nat::from(&bal.0 - &amount.0);
-        true
-    } else {
-        false
+    let balances = pool.stablecoin_balances.entry(caller.to_text()).or_default();
+    let entry = balances.entry(token.clone()).or_insert(Nat::from(0u64));
+
+    if *entry < amount {
+        return false; // cannot repay more than borrowed
     }
-}
 
-/// Withdraw collateral while respecting minimum required collateral
-#[update]
-fn withdraw_collateral(user: String, amount: Nat) -> bool {
-    let mut pool = POOL.lock().unwrap();
+    let diff = &entry.0 - &amount.0;
+    *entry = Nat::from(diff);
 
-    if let Some(account) = pool.users.get_mut(&user) {
-        // Ensure user has enough collateral to withdraw
-        if account.collateral.0 < amount.0 {
-            account.risk_advice = Some("Insufficient collateral to withdraw".to_string());
-            return false;
-        }
-
-        // Check that after withdrawal, minimum collateral is maintained
-        let remaining_collateral = &account.collateral.0 - &amount.0;
-        let required = required_collateral(&account.borrowed.0);
-        if remaining_collateral < required {
-            account.risk_advice = Some("Cannot withdraw: would breach minimum collateral".to_string());
-            return false;
-        }
-
-        account.collateral = Nat::from(remaining_collateral);
-        account.risk_advice = Some("Collateral withdrawn successfully".to_string());
-        true
-    } else {
-        false
-    }
+    true
 }
 
 
-/// Query stablecoin total supply and all balances
-/// Query stablecoin total supply AND all balances
+// ---------------- DEPOSIT COLLATERAL (caller-centric) ----------------
+#[update]
+async fn deposit_collateral(token: String, amount: Nat) -> bool {
+    let caller = ic_cdk::caller();
+
+    // Step 1: Update user collateral inside mutex
+    {
+        let mut pool = POOL.lock().unwrap();
+        let user_coll = pool.collateral.entry(caller.to_text()).or_default();
+        let coll = user_coll.entry(token.clone()).or_insert(Nat::from(0u64));
+        *coll = Nat::from(&coll.0 + &amount.0);
+    }
+
+    // Step 2: Risk check
+    let (coll_clone, borrowed_clone, deposits_clone) = {
+        let pool = POOL.lock().unwrap();
+        let coll = pool.collateral.get(&caller.to_text()).cloned().unwrap_or_default();
+        let borrowed = pool.stablecoin_balances.get(&caller.to_text()).cloned().unwrap_or_default();
+        let deposits = pool.stablecoin_balances.get(&caller.to_text()).cloned().unwrap_or_default();
+        (coll, borrowed, deposits)
+    };
+
+    let coll_usd = aggregate_collateral(&coll_clone);
+    let borrowed_usd = aggregate_borrowed(&borrowed_clone);
+    let deposits_usd = aggregate_deposits(&deposits_clone);
+
+    let mut pool = POOL.lock().unwrap();
+    if let Some(account) = pool.users.get_mut(&caller.to_text()) {
+        risk_check(account, coll_usd, borrowed_usd, deposits_usd).await;
+    }
+
+    true
+}
+
+// ---------------- CROWDFUND (caller-centric) ----------------
+#[update]
+async fn contribute_crowdfund(token: String, amount: Nat) -> bool {
+    let caller = ic_cdk::caller();
+
+    // Step 1: Update crowdfunding pool inside mutex
+    {
+        let mut cf = CF_POOL.lock().unwrap();
+        let total = cf.funds.entry(token.clone()).or_insert(Nat::from(0u64));
+        *total = Nat::from(&total.0 + &amount.0);
+
+        let contribs = cf.contributors.entry(caller.to_text()).or_default();
+        let entry = contribs.entry(token.clone()).or_insert(Nat::from(0u64));
+        *entry = Nat::from(&entry.0 + &amount.0);
+    }
+
+    // Step 2: Mint tokens outside mutex
+    let token_principal_opt = {
+        let pool = POOL.lock().unwrap();
+        pool.token_canisters.get(&token).cloned()
+    };
+
+    if let Some(token_principal) = token_principal_opt {
+        let minted = dip20::mint(token_principal, caller, amount.clone()).await;
+        if minted {
+            let mut pool = POOL.lock().unwrap();
+            log_mint(&mut pool, &caller.to_text(), &token, &amount);
+        }
+    }
+
+    true
+}
+
+// ---------------- QUERIES ----------------
+#[query]
+fn get_crowdfund_status() -> Vec<CrowdfundEntry> {
+    let cf = CF_POOL.lock().unwrap();
+    let mut entries = vec![];
+    for (user, contribs) in cf.contributors.iter() {
+        for (token, amt) in contribs.iter() {
+            entries.push(CrowdfundEntry {
+                user: user.clone(),
+                token: token.clone(),
+                amount: amt.clone(),
+            });
+        }
+    }
+    entries
+}
+
 #[query]
 fn get_stable_token() -> StableToken {
     let pool = POOL.lock().unwrap();
-
-    let balances: Vec<StableBalanceEntry> = pool
-        .stablecoin_balances
-        .iter()
-        .map(|(k, v)| StableBalanceEntry {
-            key: k.clone(),
-            value: v.clone(),
-        })
-        .collect();
-
+    let mut balances = vec![];
+    for (_user, user_balances) in pool.stablecoin_balances.iter() {
+        for (token, amt) in user_balances.iter() {
+            balances.push(StableBalanceEntry {
+                token: token.clone(),
+                value: amt.clone(),
+            });
+        }
+    }
     let total_supply = compute_total_supply(&pool);
-
     StableToken {
         total_supply,
         balances,
     }
 }
 
-
-/// Query user account details
 #[query]
 fn get_user_account(user: String) -> Option<UserAccount> {
     let pool = POOL.lock().unwrap();
-    if let Some(mut account) = pool.users.get(&user).cloned() {
-        account.username = pool.usernames.get(&user).cloned();
-        Some(account)
-    } else {
-        None
+    pool.users.get(&user).cloned()
+}
+
+#[query]
+fn get_user_balances(user: String) -> Vec<StableBalanceEntry> {
+    let pool = POOL.lock().unwrap();
+    let mut result = vec![];
+    if let Some(balances) = pool.stablecoin_balances.get(&user) {
+        for (token, amt) in balances.iter() {
+            result.push(StableBalanceEntry {
+                token: token.clone(),
+                value: amt.clone(),
+            });
+        }
     }
+    result
 }
 
-
-/// Query balance
 #[query]
-fn get_balance(user: String) -> Nat {
+fn get_user_collateral(user: String) -> Option<HashMap<String, Nat>> {
     let pool = POOL.lock().unwrap();
-    pool.stablecoin_balances.get(&user).cloned().unwrap_or(Nat::from(0u64))
+    pool.collateral.get(&user).cloned()
 }
-/// Query total stablecoin supply and all balances
+
 #[query]
-fn get_total_supply() -> Nat {
+fn get_balance(user: String, token: String) -> Nat {
     let pool = POOL.lock().unwrap();
-    compute_total_supply(&pool)
+    pool.stablecoin_balances
+        .get(&user)
+        .and_then(|m| m.get(&token))
+        .cloned()
+        .unwrap_or(Nat::from(0u64))
+}
+
+#[query]
+fn supported_tokens() -> Vec<String> {
+    let pool = POOL.lock().unwrap();
+    pool.supported_tokens.clone()
+}
+
+#[query]
+fn version() -> String {
+    "DeFi Pool Backend v1.0.0".to_string()
+}
+
+#[query]
+fn get_mint_logs() -> Vec<(String, String, Nat)> {
+    let pool = POOL.lock().unwrap();
+    pool.mint_logs.clone()
+}
+
+#[query]
+fn get_per_user_mint_logs(user: String) -> Vec<(String, Nat)> {
+    let pool = POOL.lock().unwrap();
+    pool.per_user_mint_logs.get(&user).cloned().unwrap_or_default()
 }

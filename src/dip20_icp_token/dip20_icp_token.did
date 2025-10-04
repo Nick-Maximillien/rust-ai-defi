@@ -1,0 +1,17 @@
+type Nat = nat;
+type Principal = principal;
+
+service : {
+    name: () -> (text) query;
+    symbol: () -> (text) query;
+    decimals: () -> (nat8) query;
+    total_supply: () -> (Nat) query;
+    balanceOf: (Principal) -> (Nat) query;
+    allowance: (Principal, Principal) -> (Nat) query;
+
+    approve: (Principal, Nat) -> (bool);
+    transfer: (Principal, Nat) -> (bool);
+    transferFrom: (Principal, Principal, Nat) -> (bool);
+    mint: (Principal, Nat) -> (bool);
+    burn: (Nat) -> (bool);
+}

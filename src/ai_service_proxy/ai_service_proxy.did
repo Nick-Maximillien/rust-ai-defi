@@ -1,3 +1,7 @@
+// =============================
+// AI Service Proxy Canister
+// =============================
+
 type RiskRequest = record {
   volatility: nat;
   collateral: nat;
@@ -12,6 +16,9 @@ type RiskResponse = record {
 };
 
 service : {
-  risk: (RiskRequest) -> (RiskResponse); // update
+  // Compute risk for a user request
+  risk: (RiskRequest) -> (RiskResponse) query;
+
+  // Service version
   version: () -> (text) query;
 };

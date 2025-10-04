@@ -1,11 +1,7 @@
-// Import Candid serialization for Internet Computer (ICP) interfaces
 use candid::CandidType;
-
-// Import Serde for JSON (or other formats) serialization/deserialization
-use serde::{Deserialize, Serialize};
-
-// Candid arbitrary-precision unsigned integer type
 use candid::Nat;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 
 /// Represents a user's account in the DeFi pool
 #[derive(CandidType, Serialize, Deserialize, Clone, Default)]
@@ -18,14 +14,15 @@ pub struct UserAccount {
     pub username: Option<String>,
 }
 
-/// Represents a request to borrow stablecoins from the pool
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct BorrowRequest {
-    /// Amount of stablecoin the user wants to borrow
+    /// Token identifier, e.g., "ICP", "FAKEBTC"
+    pub token: String,
+    /// Amount to borrow
     pub amount: Nat,
 }
 
-/// Request payload for Risk Engine proxy
+/// Request payload for AI Risk Engine
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct RiskRequest {
     pub volatility: Nat,
@@ -35,22 +32,38 @@ pub struct RiskRequest {
     pub credit_score: Nat,
 }
 
-/// Response payload from Risk Engine proxy
+/// Response payload from AI Risk Engine
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct RiskResponse {
-    pub risk_score: u8, // 0 = safe, 1 = high_risk
+    pub risk_score: u8, // 0 = safe, 1 = high risk
     pub advice: String,
 }
 
+/// Represents a balance entry for a specific token
 #[derive(CandidType, Serialize, Deserialize, Clone)]
 pub struct StableBalanceEntry {
-    pub key: String,
+    pub token: String,
     pub value: Nat,
 }
 
+/// Aggregated token balances for all users
 #[derive(CandidType, Serialize, Deserialize, Clone, Default)]
 pub struct StableToken {
     pub total_supply: Nat,
     pub balances: Vec<StableBalanceEntry>,
 }
 
+/// Crowdfunding entry for a user's contribution
+#[derive(CandidType, Serialize, Deserialize, Clone)]
+pub struct CrowdfundEntry {
+    pub user: String,
+    pub token: String,
+    pub amount: Nat,
+}
+
+/// Crowdfunding pool structure
+#[derive(Default)]
+pub struct CrowdfundingPool {
+    pub funds: HashMap<String, Nat>,                     // token -> total
+    pub contributors: HashMap<String, HashMap<String, Nat>>, // user -> token -> amount
+}

@@ -1,6 +1,3 @@
-type BorrowRequest = record {
-  amount: nat;
-};
 
 type UserAccount = record {
   deposited: nat;
@@ -8,12 +5,23 @@ type UserAccount = record {
   collateral: nat;
   credit_score: nat;
   risk_advice: opt text;
-  username: opt text; 
+  username: opt text;
+};
+
+type StableBalanceEntry = record {
+  token: text;
+  value: nat;
 };
 
 type StableToken = record {
   total_supply: nat;
-  balances: vec record { key: text; value: nat };
+  balances: vec StableBalanceEntry;
+};
+
+type CrowdfundEntry = record {
+  user: text;
+  token: text;
+  amount: nat;
 };
 
 type RiskRequest = record {
@@ -29,15 +37,48 @@ type RiskResponse = record {
   advice: text;
 };
 
+type MintLogEntry = record {
+  user: text;
+  token: text;
+  amount: nat;
+};
+
+type PerUserMintEntry = record {
+  token: text;
+  amount: nat;
+};
+
 service : {
+  // User registration and management
+  signup: (text, text) -> (bool);
+  list_users: () -> (vec text) query;
+  get_username: (text) -> (opt text) query;
+
+  // Token operations (caller-centric)
   deposit: (text, nat) -> (bool);
   deposit_collateral: (text, nat) -> (bool);
   withdraw_collateral: (text, nat) -> (bool);
-  borrow: (text, BorrowRequest) -> (bool);
+
+  borrow: (text, nat) -> (bool);
   repay: (text, nat) -> (bool);
-  get_balance: (text) -> (nat);
-  get_user_account: (text) -> (opt UserAccount);
-  get_stable_token: () -> (StableToken);
+
+  // Crowdfunding (caller-centric)
+  contribute_crowdfund: (text, nat) -> (bool);
+  get_crowdfund_status: () -> (vec CrowdfundEntry) query;
+
+  // Balances
+  get_balance: (text) -> (nat) query;
+  get_user_balances: () -> (vec StableBalanceEntry) query;
+  get_user_account: () -> (opt UserAccount) query;
+  get_stable_token: () -> (StableToken) query;
+
+  // AI service integration
   set_ai_proxy: (principal) -> (bool);
-  signup: (text, text) -> (bool);
+  add_token: (text, principal) -> (bool);
+
+  // Utilities
+  supported_tokens: () -> (vec text) query;
+  version: () -> (text) query;
+  get_mint_logs: () -> (vec MintLogEntry) query;
+  get_per_user_mint_logs: () -> (vec PerUserMintEntry) query;
 };
